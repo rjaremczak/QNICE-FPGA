@@ -341,13 +341,15 @@ architecture beh of MEGA65 is
   signal vga_r     : std_logic;
   signal vga_g     : std_logic;
   signal vga_b     : std_logic;
-  signal vga_red   : std_logic_vector(7 downto 0);
-  signal vga_green : std_logic_vector(7 downto 0);
-  signal vga_blue  : std_logic_vector(7 downto 0);
   signal vga_hsync : std_logic;
   signal vga_vsync : std_logic;
   signal vga_de    : std_logic;
-  signal vga_clk   : std_logic; -- VGA pixel clock
+  signal video_hblank : std_logic;
+  signal video_vblank : std_logic;
+  signal video_x  : integer range 0 to 2047;
+  signal video_y  : integer range 0 to 2047;
+  signal video_ce       : std_logic;
+  signal video_rgb      : std_logic_vector(23 downto 0);
 
   -- HDMI signals
   signal tmds_clk  : std_logic; -- HDMI pixel clock at 5x speed for TMDS @ 371.25 MHz
@@ -357,14 +359,13 @@ architecture beh of MEGA65 is
   signal hdmi_hs   : std_logic;
   signal hdmi_vs   : std_logic;
   signal hdmi_de   : std_logic;
-  signal hdmi_red   : std_logic_vector(7 downto 0);
-  signal hdmi_green : std_logic_vector(7 downto 0);
-  signal hdmi_blue  : std_logic_vector(7 downto 0);
+  signal hdmi_rgb      : std_logic_vector(23 downto 0);
 
   -- Clocks and related signals
+  signal clk_25MHz       : std_logic; 
   signal clk_50MHz       : std_logic; -- 50 MHz clock. aiming for 100 MHz
-  signal clk_100MHz      : std_logic; -- 100 MHz clock created by mmcme2 for congruent phase
-  signal clk_200MHz      : std_logic; -- 4x clk_50MHz = 200 MHz
+  signal clk_100MHz      : std_logic; 
+  signal clk_200MHz      : std_logic; 
   signal clk_fb_main     : std_logic;
   signal pll_locked_main : std_logic;
 
@@ -460,9 +461,9 @@ begin
     clkin1_period    => 10.0, -- 100 MHz (10 ns)
     clkfbout_mult_f  => 8.0, -- 800 MHz common multiply
     divclk_divide    => 1, -- 800 MHz /1 common divide to stay within 600MHz-1600MHz range
-    clkout0_divide_f => 31.75, -- Should be 25.175 MHz, but 25.197 is close enough
-    clkout1_divide   => 8, -- 100 MHz /8
-    clkout2_divide   => 16, -- 50  MHz /16
+    clkout0_divide_f => 32.0, -- 25 MHz
+    clkout1_divide   => 16, -- 100 MHz /8
+    clkout2_divide   => 8, -- 50  MHz /16
     clkout3_divide   => 4 -- 200 MHz /4
   )
   port map
@@ -472,10 +473,10 @@ begin
     clkin1   => clk_i,
     clkfbin  => clk_fb_main,
     clkfbout => clk_fb_main,
-    clkout0  => vga_clk,
-    clkout1  => clk_100MHz, --  100 MHz
-    clkout2  => clk_50MHz, --  50 MHz
-    clkout3  => clk_200MHz, --  200 MHz
+    clkout0  => clk_25MHz,
+    clkout1  => clk_50MHz,
+    clkout2  => clk_100MHz,
+    clkout3  => clk_200MHz,
     locked   => pll_locked_main
   );
 
@@ -539,31 +540,6 @@ begin
       data    => pore_rom_data_out,
       busy    => pore_rom_busy
     );
-
-  -- VGA: 80x40 textmode VGA adaptor
-  vga_screen : entity work.vga_textmode
-    port map
-    (
-      reset    => reset_ctl,
-      clk25MHz => vga_clk,
-      clk50MHz => clk_50MHz,
-      R        => vga_r,
-      G        => vga_g,
-      B        => vga_b,
-      hsync    => vga_hsync,
-      vsync    => vga_vsync,
-      hdmi_de  => vga_de, -- naming inconsistency: vga_de is hdmi_de in vga's clock domain
-      en       => vga_en,
-      we       => vga_we,
-      reg      => vga_reg,
-      data_in  => cpu_data_out,
-      data_out => vga_data_out
-    );
-
-  -- VGA: wire the simplified color system of the VGA component to the VGA outputs
-  vga_red   <= (others => vga_r);
-  vga_green <= (others => vga_g);
-  vga_blue  <= (others => vga_b);
 
   -- special UART with FIFO that can be directly connected to the CPU bus
   uart : entity work.bus_uart
@@ -776,22 +752,42 @@ begin
     end if;
   end process;
 
-  video_signal_latches : process (vga_clk)
-  begin
-    -- latching values at different edge than sampling by dac eliminates blurring
-    if falling_edge(vga_clk) then
-      vga_red_o   <= vga_red;
-      vga_green_o <= vga_green;
-      vga_blue_o  <= vga_blue;
-      vga_hs_o    <= vga_hsync;
-      vga_vs_o    <= vga_vsync;
-    end if;
-  end process;
+--  -- VGA: 80x40 textmode VGA adaptor
+--  vga_screen : entity work.vga_textmode
+--    port map
+--    (
+--      reset    => reset_ctl,
+--      clk25MHz => clk_25MHz,
+--      clk50MHz => clk_50MHz,
+--      R        => vga_r,
+--      G        => vga_g,
+--      B        => vga_b,
+--      hsync    => open, -- vga_hsync,
+--      vsync    => open, -- vga_vsync,
+--      hdmi_de  => open, -- vga_de, -- naming inconsistency: vga_de is hdmi_de in vga's clock domain
+--      en       => vga_en,
+--      we       => vga_we,
+--      reg      => vga_reg,
+--      data_in  => cpu_data_out,
+--      data_out => vga_data_out
+--    );
 
-  -- make the VDAC output the image
-  vdac_sync_n_o  <= '0';
-  vdac_blank_n_o <= '1';
-  vdac_clk_o     <= vga_clk;
+-- VGA: wire the simplified color system of the VGA component to the VGA outputs
+--  video_rgb <= vga_r & vga_r & vga_r & vga_r & vga_r & vga_r & vga_r & vga_r &
+--               vga_g & vga_g & vga_g & vga_g & vga_g & vga_g & vga_g & vga_g &
+--               vga_b & vga_b & vga_b & vga_b & vga_b & vga_b & vga_b & vga_b;
+
+--  video_signal_latches : process (clk_25MHz)
+--  begin
+--    -- latching values at different edge than sampling by dac eliminates blurring
+--    if falling_edge(clk_25MHz) then
+--      vga_red_o   <= video_rgb(23 downto 16);
+--      vga_green_o <= video_rgb(15 downto 8);
+--      vga_blue_o  <= video_rgb(7 downto 0);
+--      vga_hs_o    <= vga_hsync;
+--      vga_vs_o    <= vga_vsync;
+--    end if;
+--  end process;
 
   -- emulate the switches on the Nexys4 to toggle VGA and PS/2 keyboard
   -- bit #0: use UART as STDIN (0)  / use MEGA65 keyboard as STDIN (1)
@@ -803,6 +799,57 @@ begin
     '0';
 
   -- VGA to HDMI conversion --
+  
+   vga_controller_inst : entity work.vga_controller
+    port map (
+       h_pulse   => VIDEO_MODE.H_PULSE,
+       h_bp      => VIDEO_MODE.H_BP,
+       h_pixels  => VIDEO_MODE.H_PIXELS,
+       h_fp      => VIDEO_MODE.H_FP,
+       h_pol     => VIDEO_MODE.H_POL,
+       v_pulse   => VIDEO_MODE.V_PULSE,
+       v_bp      => VIDEO_MODE.V_BP,
+       v_pixels  => VIDEO_MODE.V_PIXELS,
+       v_fp      => VIDEO_MODE.V_FP,
+       v_pol     => VIDEO_MODE.V_POL,
+       clk_i     => clk_25MHz,
+       ce_i      => '1',
+       reset_n   => not reset_ctl,
+       h_sync    => vga_hsync,
+       v_sync    => vga_vsync,
+       h_blank   => video_hblank,
+       v_blank   => video_vblank,
+       column    => video_x,
+       row       => video_y,
+       n_blank   => open,
+       n_sync    => open
+    );
+
+  proc_video_rgb: process(clk_25MHz)
+  begin
+    if falling_edge(clk_25MHz) then
+      if video_hblank = '1' or video_vblank = '1' then
+        video_rgb <= X"000000";
+      else
+        if video_x = 0 or video_x = 639 or video_y = 0 or video_y = 479 then
+          video_rgb <= X"33FF33";
+        else 
+          video_rgb <= X"0F0F0F";
+        end if;
+      end if;
+      vga_hs_o    <= vga_hsync;
+      vga_vs_o    <= vga_vsync;
+    end if;
+  end process proc_video_rgb;
+
+  vga_red_o   <= video_rgb(23 downto 16);
+  vga_green_o <= video_rgb(15 downto 8);
+  vga_blue_o  <= video_rgb(7 downto 0);
+  
+  -- make the VDAC output the image
+  vdac_sync_n_o  <= '0';
+  vdac_blank_n_o <= '1';
+  vdac_clk_o     <= clk_25MHz;
 
   -- reconfigurable MMCM: 25.2MHz, 27MHz, 74.25MHz or 148.5MHz
   video_out_clock_inst : entity work.video_out_clock
@@ -819,26 +866,33 @@ begin
       clko_x5 => tmds_clk
     ); -- video_out_clock_inst
 
+    hdmi_clk_inst : entity work.serialiser_10to1_selectio
+      port map
+      (
+        rst    => hdmi_rst,
+        clk    => hdmi_clk,
+        clk_x5 => tmds_clk,
+        d      => "0000011111",
+        out_p  => tmds_clk_p_o,
+        out_n  => tmds_clk_n_o
+      ); -- hdmi_clk_inst
+
   vga_to_hdmi_cdc : component xpm_cdc_array_single
     generic map(
       WIDTH => 27
     )
     port map
     (
-      src_clk     => vga_clk,
+      src_clk     => clk_25MHz,
       src_in(0)   => vga_hsync,
       src_in(1)   => vga_vsync,
-      src_in(2)   => vga_de,
-      src_in(10 downto 3)   => vga_red,
-      src_in(18 downto 11)   => vga_green,
-      src_in(26 downto 19)   => vga_blue,
+      src_in(2)   => not (video_hblank or video_vblank),
+      src_in(26 downto 3)   => video_rgb,
       dest_clk    => hdmi_clk,
       dest_out(0) => hdmi_hs,
       dest_out(1) => hdmi_vs,
       dest_out(2) => hdmi_de,
-      dest_out(10 downto 3)   => hdmi_red,
-      dest_out(18 downto 11)   => hdmi_green,
-      dest_out(26 downto 19)   => hdmi_blue
+      dest_out(26 downto 3)   => hdmi_rgb
     );
 
     hdmi_data_gen : for i in 0 to 2 generate
@@ -854,17 +908,6 @@ begin
           out_n  => tmds_data_n_o(i)
         );
     end generate hdmi_data_gen;
-
-    hdmi_clk_inst : entity work.serialiser_10to1_selectio
-      port map
-      (
-        rst    => hdmi_rst,
-        clk    => hdmi_clk,
-        clk_x5 => tmds_clk,
-        d      => "0000011111",
-        out_p  => tmds_clk_p_o,
-        out_n  => tmds_clk_n_o
-      ); -- hdmi_clk_inst
 
     vga_to_hdmi_inst : entity work.vga_to_hdmi
       port map
@@ -882,9 +925,9 @@ begin
         vga_vs  => hdmi_vs,
         vga_hs  => hdmi_hs,
         vga_de  => hdmi_de,
-        vga_r   => hdmi_red,
-        vga_g   => hdmi_green,
-        vga_b   => hdmi_blue,
+        vga_r   => hdmi_rgb(23 downto 16),
+        vga_g   => hdmi_rgb(15 downto 8),
+        vga_b   => hdmi_rgb(7 downto 0),
 
         -- PCM audio
         pcm_clk   => '0',
