@@ -341,9 +341,9 @@ architecture beh of MEGA65 is
   signal vga_r        : std_logic;
   signal vga_g        : std_logic;
   signal vga_b        : std_logic;
-  signal vga_hsync    : std_logic;
-  signal vga_vsync    : std_logic;
-  signal vga_de       : std_logic;
+  signal video_hs     : std_logic;
+  signal video_vs     : std_logic;
+  signal video_de     : std_logic;
   signal video_hblank : std_logic;
   signal video_vblank : std_logic;
   signal video_x      : integer range 0 to 2047;
@@ -363,8 +363,9 @@ architecture beh of MEGA65 is
 
   -- Clocks and related signals
   signal clk_25MHz       : std_logic;
-  signal clk_50MHz       : std_logic; -- 50 MHz clock. aiming for 100 MHz
+  signal clk_50MHz       : std_logic;
   signal clk_100MHz      : std_logic;
+  signal clk_125MHz      : std_logic;
   signal clk_200MHz      : std_logic;
   signal clk_fb_main     : std_logic;
   signal pll_locked_main : std_logic;
@@ -459,12 +460,13 @@ begin
   generic map
   (
     clkin1_period    => 10.0, -- 100 MHz (10 ns)
-    clkfbout_mult_f  => 8.0, -- 800 MHz common multiply
-    divclk_divide    => 1, -- 800 MHz /1 common divide to stay within 600MHz-1600MHz range
-    clkout0_divide_f => 32.0, -- 25 MHz
-    clkout1_divide   => 16, -- 100 MHz /8
-    clkout2_divide   => 8, -- 50  MHz /16
-    clkout3_divide   => 4 -- 200 MHz /4
+    clkfbout_mult_f  => 10.0, -- 1000 MHz
+    divclk_divide    => 1, -- 1000 MHz /1 common divide to stay within 600MHz-1600MHz range
+    clkout0_divide_f => 40.0, -- 25 MHz
+    clkout1_divide   => 20, -- 50 MHz
+    clkout2_divide   => 10, -- 100  MHz
+    clkout3_divide   => 5, -- 200 MHz
+    clkout4_divide   => 8 -- 125 MHz
   )
   port map
   (
@@ -477,6 +479,7 @@ begin
     clkout1  => clk_50MHz,
     clkout2  => clk_100MHz,
     clkout3  => clk_200MHz,
+    clkout4  => clk_125MHz,
     locked   => pll_locked_main
   );
 
@@ -764,7 +767,7 @@ begin
   --      B        => vga_b,
   --      hsync    => open, -- vga_hsync,
   --      vsync    => open, -- vga_vsync,
-  --      hdmi_de  => open, -- vga_de, -- naming inconsistency: vga_de is hdmi_de in vga's clock domain
+  --      hdmi_de  => open, -- video_de, -- naming inconsistency: video_de is hdmi_de in vga's clock domain
   --      en       => vga_en,
   --      we       => vga_we,
   --      reg      => vga_reg,
@@ -816,8 +819,8 @@ begin
       v_pixels => VIDEO_MODE.V_PIXELS,
       v_fp     => VIDEO_MODE.V_FP,
       v_pol    => VIDEO_MODE.V_POL,
-      h_sync   => vga_hsync,
-      v_sync   => vga_vsync,
+      h_sync   => video_hs,
+      v_sync   => video_vs,
       h_blank  => video_hblank,
       v_blank  => video_vblank,
       column   => video_x,
@@ -838,8 +841,8 @@ begin
           video_rgb <= X"0F0F0F";
         end if;
       end if;
-      vga_hs_o <= vga_hsync;
-      vga_vs_o <= vga_vsync;
+      vga_hs_o <= video_hs;
+      vga_vs_o <= video_vs;
     end if;
   end process proc_video_rgb;
 
@@ -853,21 +856,47 @@ begin
   vdac_clk_o     <= clk_25MHz;
 
   -- reconfigurable MMCM: 25.2MHz, 27MHz, 74.25MHz or 148.5MHz
-  video_out_clock_inst : entity work.video_out_clock
-    generic map(
-      FREF => 100.0 -- Clock speed in MHz of the input clk_i
-    )
-    port map
-    (
-      rsti    => reset_ctl,
-      clki    => clk_i,
-      sel     => VIDEO_MODE.CLK_SEL,
-      rsto    => hdmi_rst,
-      clko    => hdmi_clk,
-      clko_x5 => tmds_clk
-    ); 
+--  video_out_clock_inst : entity work.video_out_clock
+--    generic map(
+--      FREF => 100.0 -- Clock speed in MHz of the input clk_i
+--    )
+--    port map
+--    (
+--      rsti    => reset_ctl,
+--      clki    => clk_i,
+--      sel     => VIDEO_MODE.CLK_SEL,
+--      rsto    => hdmi_rst,
+--      clko    => hdmi_clk,
+--      clko_x5 => tmds_clk
+--    ); 
 
-  hdmi_clk_inst : entity work.serialiser_10to1_selectio
+--  vga_to_hdmi_cdc : component xpm_cdc_array_single
+--    generic map(
+--      WIDTH => 27
+--    )
+--    port map
+--    (
+--      src_clk               => clk_25MHz,
+--      src_in(0)             => not video_hs,
+--      src_in(1)             => not video_vs,
+--      src_in(2)             => not (video_hblank or video_vblank),
+--      src_in(26 downto 3)   => video_rgb,
+--      dest_clk              => hdmi_clk,
+--      dest_out(0)           => hdmi_hs,
+--      dest_out(1)           => hdmi_vs,
+--      dest_out(2)           => hdmi_de,
+--      dest_out(26 downto 3) => hdmi_rgb
+--    );
+
+  hdmi_rst <= reset_ctl;
+  hdmi_clk <= clk_25MHz;
+  tmds_clk <= clk_125MHz;
+  hdmi_hs <= video_hs;
+  hdmi_vs <= video_vs;
+  hdmi_de <= not (video_hblank or video_vblank);
+  hdmi_rgb <= video_rgb;
+
+  hdmi_clk_gen : entity work.serialiser_10to1_selectio
     port map
     (
       rst    => hdmi_rst,
@@ -876,24 +905,6 @@ begin
       d      => "0000011111",
       out_p  => tmds_clk_p_o,
       out_n  => tmds_clk_n_o
-    );
-
-  vga_to_hdmi_cdc : component xpm_cdc_array_single
-    generic map(
-      WIDTH => 27
-    )
-    port map
-    (
-      src_clk               => clk_25MHz,
-      src_in(0)             => vga_hsync,
-      src_in(1)             => vga_vsync,
-      src_in(2)             => not (video_hblank or video_vblank),
-      src_in(26 downto 3)   => video_rgb,
-      dest_clk              => hdmi_clk,
-      dest_out(0)           => hdmi_hs,
-      dest_out(1)           => hdmi_vs,
-      dest_out(2)           => hdmi_de,
-      dest_out(26 downto 3) => hdmi_rgb
     );
 
     hdmi_data_gen : for i in 0 to 2 generate
